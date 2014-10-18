@@ -1,0 +1,189 @@
+---
+title: "Human Activity Recognition"
+author: "Michael Riggs"
+date: "Oct 7, 2014"
+output:
+  html_document: default
+---
+Human Activity Recognition
+
+Human Activity Recognition - HAR - has emerged as a key research area in the last years and is gaining increasing attention by the pervasive computing research community (see picture below, that illustrates the increasing number of publications in HAR with wearable accelerometers), especially for the development of context-aware systems. There are many potential applications for HAR, like: elderly monitoring, life log systems for monitoring energy expenditure and for supporting weight-loss programs, and digital assistants for weight lifting exercises.
+
+Read more: http://groupware.les.inf.puc-rio.br/har#literature#ixzz3Fsr6VMBK
+#Data Initialization
+##Load Required packages
+```{r LoadPackages}
+require(caret)
+require(e1071)
+
+```
+
+## Load Data
+
+This project uses the Human Activity Recognition Dataset.  
+```{r Initialize}
+#
+#Initialze locations of data
+#
+trainingDataURL     <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+trainingDataFile    <- "pml-training.csv"
+
+testDataURL     <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+testDataFile    <- "pml-testing.csv"
+
+#
+# Load Data
+#
+if (!file.exists(trainingDataFile)) 
+  { 
+    download.file(trainingDataURL, trainingDataFile , method="curl")
+  }
+training <- read.csv(trainingDataFile)
+
+if (!file.exists(testDataFile)) 
+  { 
+    download.file(testDataURL, testDataFile , method="curl")
+  }
+testing <- read.csv(testDataFile)
+```
+
+Training data is loaded from `r trainingDataURL` and test data from `r testDataURL`.
+
+## Clean Data
+Looking at the test dataset, there are a number of columns that contain mostly NA's, data errors, or blanks.
+```{r SummarizeRawData}
+summary(testing)
+```
+
+Eliminate columns from the data that have a vast majority or "NAs" or blank data values.
+
+```{r CleanData}
+cleanCols <- c("num_window","roll_belt","pitch_belt","yaw_belt",
+"total_accel_belt","gyros_belt_x","gyros_belt_y","gyros_belt_z","accel_belt_x",
+"accel_belt_y","accel_belt_z","magnet_belt_x","magnet_belt_y","magnet_belt_z",
+"roll_arm","pitch_arm","yaw_arm","total_accel_arm",
+"gyros_arm_x","gyros_arm_y","gyros_arm_z","accel_arm_x","accel_arm_y","accel_arm_z",
+"magnet_arm_x","magnet_arm_y","magnet_arm_z",
+"roll_dumbbell","pitch_dumbbell","yaw_dumbbell","total_accel_dumbbell",
+"gyros_dumbbell_x","gyros_dumbbell_y","gyros_dumbbell_z",
+"accel_dumbbell_x","accel_dumbbell_y","accel_dumbbell_z","magnet_dumbbell_x","magnet_dumbbell_y",
+"magnet_dumbbell_z","roll_forearm","pitch_forearm","yaw_forearm","total_accel_forearm",
+"gyros_forearm_x","gyros_forearm_y","gyros_forearm_z","accel_forearm_x","accel_forearm_y",
+"accel_forearm_z","magnet_forearm_x","magnet_forearm_y","magnet_forearm_z","classe")
+
+testCols <-  cleanCols[1:length(cleanCols)-1]
+
+har_training<- training[, cleanCols]
+har_testing <- testing[, testCols]
+
+```
+
+
+##Explore the data
+
+Perform some preliminary exploration of the data.
+
+```{r ExploreData}
+ cols = names(har_training)
+featurePlot(x=har_training[, cols[1:24]], y=har_training$classe)
+
+# gyros don't appear to be vary much.
+# and there may be some outliers here as the values look high
+gyros = cols[which(grepl("gyro",cols))]
+featurePlot(x=har_training[, gyros], y=har_training$classe)
+
+# Looks like some bad data on magnet_dumbbell_y
+magnets = cols[which(grepl("magnet",cols))]
+featurePlot(x=har_training[, magnets], y=har_training$classe)
+
+featurePlot(x=har_training[, cols[25:53]], y=har_training$classe)
+
+```
+
+From the plots, columns starting with "gyro" and "magnet" don't appear to vary significantly so I chose to eliminate them from the dataset to reduce dimensionality.
+
+##Clean outliers
+In this step, clean the two datapoints that are outliers where gyros_dumbbell_z > 100 and magnet_dumbbell_y<-1000.  Note that only the training set is cleaned.
+
+```{r CleanOutliers}
+har_training<- har_training[-which(har_training$gyros_dumbbell_z > 100),]
+har_training <- har_training[-which(har_training$magnet_dumbbell_y < -1000 ),]
+```
+## Identify low variability data
+As a check, investigate if there are any predictors that have limited variability.  
+```{r IdentifyZeroVariability}
+nearZeroVar(har_training, saveMetrics=TRUE)
+```
+As seen in the following table, all the covariets have variability.
+
+
+## Examine Clean data
+
+For the training set, we now have a clean set of variable data.
+
+```{r ExamineClean}
+featurePlot(x=har_training[, cols[1:24]], y=har_training$classe)
+
+featurePlot(x=har_training[, cols[25:53]], y=har_training$classe)
+
+```
+
+#Build a model
+
+##Create Validation and Training data
+
+The training dataset is partioned in half.  We use the first half to train the model and the second to validate the model. We use 75% of the data for training and 25% for model validation.
+
+```{r PartitionData}
+
+partitions = createDataPartition(har_training$classe, p = .75)
+
+inTrain = partitions[[1]]
+
+model_training = har_training[ inTrain,]
+model_validation= har_training[-inTrain,]
+```
+
+## Preprocess the dataset
+To reduce dimensionality, perform a PCA.  This reduces the dimenstions from 53 predictors to 27 while giving coverage for 95% of the variability.
+
+```{r PreProcess}
+classe_col = which(grepl("classe",cols))
+preObj <- preProcess(model_training[,-classe_col], method=c("pca"), thresh=.98)
+preObj
+```
+Using this method reduced the number of predictors from 53 to 38 while maintaining 99% coverage of the variance.
+
+##Transform Training and Validation dataset.
+To prepare for modelling, we transform the training set and validation set to the dimensions of the PCA.
+
+```{r TransformAndCreateSets}
+trainPC <- predict(preObj,model_training[,-classe_col] )
+featurePlot(x=trainPC, y=trainPC$classe)
+validationPC <-  predict(preObj,model_validation[,-classe_col] )
+```
+
+#Train & Test a Model
+
+Using the preprocessed training dataset, create a model using the Random Forest algorithm.  We use Random Forest, because of the high dimenstionality of the data and observation that the dataset has no clear linear predictor releationships.  Once the model is created, use it to predict values for the validation test set and create a confusion matrix to assess model performance.
+
+
+```{r TrainModel}
+modelFit <- train(model_training$classe ~., method="rf", data=trainPC)
+
+confusionMatrix(model_validation$classe, predict(modelFit, newdata=validationPC) )
+```
+
+As shown above, the model has an overall accuracy of 98.7% in the cross validation set.
+
+
+#Predict Values 
+
+To predict values from the test set, perform the PCA transformation and run the prediction with the model.
+```{r PredictModel}
+
+testPC <-  predict(preObj,har_testing[,-classe_col] )
+prediction <- predict(modelFit, newdata=testPC) 
+prediction
+```
+
